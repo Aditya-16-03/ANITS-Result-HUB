@@ -6,7 +6,7 @@ export default function UploadResultsPage() {
       <div className="text-center">
         <h1 className="text-3xl font-bold tracking-tight">Upload Student Results</h1>
         <p className="text-muted-foreground">
-          Upload an Excel file with student results for a specific year and department.
+          Upload the results PDF. Year, semester, department and subjects are detected automatically.
         </p>
       </div>
       <FileUploadForm />

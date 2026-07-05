@@ -35,7 +35,7 @@ import { Loader2, UploadCloud, File as FileIcon, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { uploadFacultyDetailsFile } from "@/services/api";
 
-const departments = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "CSM"];
+const departments = ["CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];
 
 const fileUploadSchema = z.object({
   department: z.string().refine(val => val !== '--', { message: "Please select a department." }),

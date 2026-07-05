@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 
 const academicYears = ["--", "A21", "A22", "A23", "A24", "A25"];
 const semesters = ["--", "1-1", "1-2", "2-1", "2-2", "3-1", "3-2", "4-1", "4-2"];
-const departments = ["--", "CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "CSM"];
+const departments = ["--", "CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];
 
 const processDataForVerticalTable = (data: any[] | null) => {
   if (!data || data.length === 0) {

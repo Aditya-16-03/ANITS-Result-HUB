@@ -35,7 +35,7 @@ import { cn } from "@/lib/utils";
 import { uploadStudentDetailsFile } from "@/services/api";
 
 const years = ["A21", "A22", "A23", "A24"];
-const departments = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "CSM"];
+const departments = ["CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];
 
 const fileUploadSchema = z.object({
   year: z.string().refine(val => val !== '--', { message: "Please select an admission year." }),

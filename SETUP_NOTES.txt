@@ -1,0 +1,377 @@
+==========================================================================
+ ANITS RESULTS HUB - SETUP NOTES (Placement Prep)
+ (Note: the previous SETUP_NOTES.txt was no longer present at the project
+  root, so this file was recreated with the latest step. Earlier steps
+  1-6 covered: env check, DB config, frontend/backend connection + CORS
+  fix, npm install, the registration 500 fix, and the full health check.)
+==========================================================================
+
+==========================================================================
+ STEP 7 - LOADING STUDENT DATA (via the EXISTING upload controller)
+==========================================================================
+- Goal: load a real class list (Data.xlsx) into the DB WITHOUT writing any
+  new code - using the app's own upload endpoint.
+
+- Endpoint used (already in the codebase):
+    POST /api/admin/upload-student   (StudentExcelUploadController)
+    multipart params: file, batch, branch
+    -> creates/fills table  students_<batch>_<branch>  (here students_a23_csm)
+
+- The endpoint is auth-protected, so I logged in first to get a JWT and
+  sent it as  Authorization: Bearer <token>, then posted the file with curl.
+
+- Had to DROP the old students_a23_csm first, because it still held the
+  single throwaway test row from an earlier step with a different
+  (3-column) shape. The Excel adds an s_no column, and the upload service
+  uses CREATE TABLE IF NOT EXISTS + INSERT (no ALTER, no upsert), so the
+  stale table would have caused a column-mismatch / primary-key clash.
+
+- Result: 277 students loaded
+    CSM A: 71   CSM B: 72   CSM C: 67   CSM D: 67
+    columns: s_no / roll_no (PK) / name_of_the_student / section
+
+WHY THIS MATTERS (interview point):
+- Registration is gated on this table, so once the official class list is
+  loaded, every listed student can sign up and log in - matching the app's
+  intended admin-first data flow, instead of hand-inserting rows.
+- Reused an existing API contract (multipart upload + JWT auth) rather than
+  bypassing the app - the correct way to seed data into a running system.
+==========================================================================
+
+
+==========================================================================
+ STEP 8 - NEW FEATURE: PDF INPUT -> n8n -> EXCEL -> BACKEND (Flow A)
+==========================================================================
+
+WHAT WAS ADDED
+- The backend previously accepted only Excel (.xlsx) uploads. It can now
+  also accept a PDF. The PDF is sent to an n8n automation workflow, which
+  converts it to Excel and returns the Excel; the backend then feeds that
+  Excel into the SAME existing upload logic (results, students, etc.).
+- Flow A (backend is the orchestrator):
+    Frontend --(PDF)--> Backend --(PDF)--> n8n --(Excel)--> Backend
+    --> existing Excel-processing services --> PostgreSQL
+
+FILES ADDED (purely additive - nothing existing was changed or deleted)
+1. service/N8nPdfConversionService.java
+     - Posts the PDF to the n8n webhook (multipart 'file' + 'docType') and
+       returns the converted .xlsx bytes. Uses RestTemplate with timeouts.
+2. util/ByteArrayMultipartFile.java
+     - Wraps the returned Excel bytes as a MultipartFile so it can be passed
+       straight into the existing controllers.
+3. controller/PdfUploadController.java
+     - New endpoints under /api/admin/pdf/**. Each converts the PDF via n8n,
+       then delegates to the matching existing Excel controller (so zero
+       parsing logic is duplicated). Includes @ExceptionHandler so failures
+       return a clear 503/502 message instead of a confusing 403.
+4. application.properties  (config appended)
+     - n8n.webhook.url= (blank by default)
+     - n8n.webhook.timeout-ms=120000
+     - spring.servlet.multipart.max-file-size=25MB
+     - spring.servlet.multipart.max-request-size=25MB
+
+NEW ENDPOINTS (all require a JWT, same as existing /api/admin uploads)
+  POST /api/admin/pdf/upload                     params: file, batch, semester, branch
+  POST /api/admin/pdf/upload-student             params: file, batch, branch
+  POST /api/admin/pdf/upload-supply              params: file, batch, semester, branch
+  POST /api/admin/pdf/upload-faculty-details     params: file, branch
+  POST /api/admin/pdf/upload/faculty-performance params: file, branch, batch, semester
+  POST /api/admin/pdf/upload/student-performance params: file, batch, branch, semester
+  (send the PDF in the 'file' field; everything else matches the Excel endpoints)
+
+--------------------------------------------------------------------------
+ >>> WHAT YOU STILL NEED TO DO (required before this works) <<<
+--------------------------------------------------------------------------
+1. BUILD THE n8n WORKFLOW
+   - Create a workflow that starts with a *Webhook* node (HTTP POST).
+   - The backend sends multipart/form-data with:
+       * file    = the PDF (binary)
+       * docType = a hint string: "results", "student", "supply",
+                   "faculty-details", "faculty-performance", or
+                   "student-performance"  (use it to branch if you want
+                   different parsing per document type).
+   - Add nodes that convert the PDF into a spreadsheet (e.g. a PDF-table
+     extraction step, then a "Convert to File / Spreadsheet (xlsx)" node).
+   - VERY IMPORTANT: the produced Excel must have the SAME layout the
+     existing Excel endpoints expect, otherwise parsing will fail:
+       * Results (/upload): header info on rows 2 and 3 (data starts row 4),
+         first column = roll number.
+       * Student list (/upload-student): single header row
+         (roll_no, name_of_the_student, section), data from row 2.
+       * Supply / faculty-details: single header row, data from row 2.
+       * faculty-performance / student-performance: header row 1, data below.
+   - The Webhook node must RESPOND with the binary .xlsx file in the HTTP
+     response body (set "Respond With" = the binary file). The backend reads
+     the response bytes directly and checks they start with 'PK' (zip/xlsx).
+
+2. CONFIGURE THE WEBHOOK URL IN THE BACKEND
+   - In application.properties set:
+       n8n.webhook.url=https://<your-n8n-host>/webhook/<your-path>
+   - (Optional) raise n8n.webhook.timeout-ms if conversion is slow.
+   - Restart the backend.
+
+3. (OPTIONAL) SECURE THE n8n CALL
+   - If your n8n webhook needs an auth header/API key, that has to be added
+     in N8nPdfConversionService (currently it posts without extra auth).
+
+4. (FRONTEND) POINT THE PDF UPLOAD UI AT THE NEW ENDPOINTS
+   - Reuse the existing Axios upload calls but change the path to the
+     /api/admin/pdf/... equivalent and send the PDF as 'file'.
+
+HOW TO TEST QUICKLY (once n8n URL is set)
+   - Log in to get a JWT, then:
+     curl -X POST http://localhost:8091/api/admin/pdf/upload-student \
+          -H "Authorization: Bearer <token>" \
+          -F "file=@yourfile.pdf" -F "batch=a23" -F "branch=csm"
+   - Expected: "Data uploaded successfully into table: students_a23_csm".
+   - If you see  503 "n8n webhook URL is not configured"  -> set the URL.
+   - If you see  502 "PDF conversion failed: ..."         -> n8n unreachable
+     or it didn't return a valid .xlsx; check the n8n workflow response.
+
+INTERVIEW TALKING POINTS
+- Added a new input channel WITHOUT touching existing code: the PDF
+  controller delegates to the existing Excel controllers, so all parsing
+  and table-creation logic is reused (Open/Closed principle in practice).
+- Used an external automation tool (n8n) for the heavy PDF->Excel work and
+  kept the backend as a thin orchestrator - clean separation of concerns.
+- Handled the classic Spring Security gotcha where an unhandled exception
+  gets re-dispatched to /error and surfaces as a misleading 403; added
+  @ExceptionHandler to return meaningful 503/502 responses instead.
+==========================================================================
+
+Frontend
+    ↓
+Spring Boot
+    ↓
+n8n
+    ↓
+Python PDF Parser Service
+    ↓
+n8n
+    ↓
+Spring Boot
+    ↓
+MySQL
+
+
+==========================================================================
+ STEP 9 - NEW FEATURE: RESULTS VIA JSON (no Excel/PDF needed)
+==========================================================================
+
+WHAT WAS ADDED (additive - nothing deleted)
+- A single endpoint that accepts branch-wise semester results as JSON and
+  stores them into the same {batch}_{semester}_{branch} table the existing
+  "view results" flow already reads. No Excel parsing, no n8n needed.
+
+FILES ADDED
+1. models/ResultsJsonRequest.java        - request DTO (batch, semester, branch, results[])
+2. service/JsonResultsUploadService.java - creates table + upserts rows
+3. controller/JsonResultsUploadController.java - the endpoint
+
+ENDPOINT
+  POST /api/admin/results/json      (requires JWT, like other /api/admin routes)
+  Content-Type: application/json
+  Body:
+  {
+    "batch": "a23",
+    "semester": "1-1",
+    "branch": "csm",
+    "results": [
+      { "rollno": "A23126552069", "datastructures": "A+", "operatingsystems": "A", "sgpa": "9.1", "cgpa": "9.1" },
+      { "rollno": "A23126552070", "datastructures": "B",  "operatingsystems": "A", "sgpa": "8.2", "cgpa": "8.2" }
+    ]
+  }
+
+HOW IT STORES (matches the existing read side)
+- Table name: {batch}_{semester}_{branch}  e.g. a23_1_1_csm
+- Columns come from the JSON keys (sanitised to lowercase a-z0-9_).
+  MUST include "rollno". "sgpa"/"cgpa"/subject names become columns.
+- rollno is the PRIMARY KEY; all other columns are TEXT.
+- New columns in later uploads are added automatically (ALTER ADD COLUMN IF NOT EXISTS).
+- Re-uploading the same rollno UPDATES that row (upsert) - easy corrections.
+
+VERIFIED
+- POST returned: "Stored 2 result rows into table: a23_1_1_csm".
+- The existing GET /api/student/get-results?roll_no=..&branch=.. returned the
+  1-1 results correctly, proving full compatibility with the current frontend.
+
+USAGE NOTES / GOTCHAS
+- Send ONE branch (+batch+semester) per request; call again for other branches/sems.
+- Use key "rollno" (not "roll_no") and "sgpa"/"cgpa" so the existing view/admin
+  queries (which select rollno, sgpa) keep working.
+- If a legacy results table already exists WITHOUT a rollno primary key (created
+  by the old Excel uploader), the upsert can't use ON CONFLICT - drop that table
+  first, then re-upload via JSON so it's recreated with the rollno PK.
+
+PENDING (waiting on your confirmation)
+- You asked to REMOVE the Excel endpoints. Exact scope still to be confirmed
+  before any deletion (see chat). Nothing has been deleted yet.
+==========================================================================
+
+
+==========================================================================
+ STEP 10 - RESULTS VIA n8n JSON (final design; replaces PDF->Excel)
+==========================================================================
+
+NEW FLOW
+  User uploads PDF  ->  n8n converts PDF to JSON  ->  n8n POSTs JSON to backend
+  Backend stores it into the existing {batch}_{semester}_{branch} result tables.
+  (The backend no longer touches PDFs or Excel for results.)
+
+REMOVED (obsolete PDF->Excel feature I had added earlier)
+  - controller/PdfUploadController.java
+  - service/N8nPdfConversionService.java
+  - util/ByteArrayMultipartFile.java
+  - n8n.webhook.* lines in application.properties
+  (Original repo Excel controllers were left untouched - e.g. student-list,
+   supply, faculty uploaders still exist. Only the PDF pieces I made were removed.)
+
+ADDED (current JSON feature)
+  - models/ResultsJsonRequest.java   - matches the n8n payload (sections[] -> students[])
+  - util/BranchCodeMapper.java       - full branch name -> short code
+  - service/JsonResultsUploadService.java
+  - controller/JsonResultsUploadController.java
+
+ENDPOINT
+  POST /api/admin/results/json      (requires a JWT)
+  Content-Type: application/json
+  Body = the full n8n payload, e.g.:
+  {
+    "sectionCount": 2,
+    "sections": [
+      {
+        "branch": "CHEMICAL ENGINEERING",
+        "examType": "Regular Examinations (R23)",
+        "heldIn": "December 2024",
+        "semester": "II/IV B.Tech SEM-I",
+        "students": [
+          { "rollNo": "A23126502001", "sgpa": 7.36, "cgpa": 8.15,
+            "subjects": { "Momentum Transfer": "A", "Momentum Transfer Lab": "B+" } }
+        ]
+      }
+    ]
+  }
+  Response: { "totalRows": N, "tables": [ { "tableName": "...", "rowCount": N } ] }
+
+HOW VALUES MAP TO A TABLE
+  - batch    = first 3 chars of rollNo, lowercased        (A23126502001 -> a23)
+  - semester = parsed from the descriptive string         ("II/IV ... SEM-I" -> 2-1, stored as 2_1)
+  - branch   = short code from branch name (BranchCodeMapper):
+                 Computer Science (AI & ML) -> csm
+                 Computer Science           -> cse
+                 Information Technology     -> it
+                 Electronics & Communication-> ece
+                 Electrical                 -> eee
+                 Mechanical                 -> mech
+                 Civil                      -> civil
+                 Chemical                   -> che   (NOT in the frontend list yet)
+                 anything else              -> auto-generated initials code
+  - Table name: {batch}_{semester}_{branch}  e.g.  a23_2_1_che
+  - Columns: rollno (PK), sgpa, cgpa, + one per subject (subject names sanitized
+             to lowercase alphanumeric, e.g. "Momentum Transfer" -> momentumtransfer)
+  - Re-uploading the same rollno UPDATES the row (upsert).
+
+VERIFIED
+  - Posting a 2-section payload created a23_2_1_che (2 rows) and a23_2_1_csm (1 row).
+  - The existing GET /api/student/get-results returned the 2-1 data correctly.
+  - Test tables were dropped afterwards; DB left clean (students_a23_csm, users).
+
+--------------------------------------------------------------------------
+ >>> WHAT n8n NEEDS TO DO TO INTEGRATE <<<
+--------------------------------------------------------------------------
+1. GET A TOKEN FIRST (the endpoint is JWT-protected):
+   - Add an HTTP Request node in n8n:  POST http://<backend>/api/login/admin
+     body { "email": "...", "username": "...", "password": "..." }
+   - Read jwtToken from the response.
+   - NOTE: there is currently NO admin account in the DB. Create one first
+     (an admin row in the users table, or via the signup flow) so n8n can log in.
+     The endpoint only needs *any* valid user token (not a specific role), but a
+     dedicated service/admin account is cleaner. Tokens expire in 2 hours, so log
+     in at the start of each workflow run.
+
+2. POST THE RESULTS JSON:
+   - HTTP Request node:  POST http://<backend>/api/admin/results/json
+     Header:  Authorization: Bearer {{ $json.jwtToken }}
+     Header:  Content-Type: application/json
+     Body:    the converted results JSON (the sections[] structure above)
+
+3. NETWORKING:
+   - If n8n is cloud-hosted, http://localhost:8091 is NOT reachable from it.
+     Expose the backend with a tunnel (ngrok / cloudflared) or deploy it, and use
+     that public URL in the n8n HTTP nodes. If n8n runs on this same machine,
+     localhost:8091 is fine.
+   - CORS does not apply (n8n is server-to-server, not a browser).
+
+4. BRANCH CODES:
+   - Confirm the branch codes above match what your frontend/login uses. "Chemical"
+     is mapped to "che" but is not in the frontend DEPARTMENTS list yet - add it
+     there if chemical students need to view results.
+==========================================================================
+
+
+==========================================================================
+ STEP 11 - ADMIN ACCOUNT, NEW BRANCHES, n8n AUTH & NGROK
+==========================================================================
+
+ADMIN ACCOUNT CREATED (needed for website admin login + n8n auth)
+  email    : admin@anits.edu.in
+  username : admin
+  password : Admin@123
+  role     : admin
+  NOTE: passwords are stored in PLAINTEXT in this app - change before any real
+        deployment and add hashing (BCrypt) later.
+
+AUTH - WHO NEEDS THE TOKEN (clarification)
+  The results endpoint is JWT-protected. Two valid patterns:
+  (a) Website does the final POST: admin logs in on the site -> uploads PDF ->
+      frontend sends PDF to n8n -> n8n returns JSON -> the FRONTEND posts that
+      JSON to /api/admin/results/json using the admin's logged-in token.
+      => n8n itself needs NO backend credentials.
+  (b) n8n posts directly: n8n first calls POST /api/login/admin to get a token,
+      then posts the JSON with that token.
+  Either way an admin account must exist (now created).
+
+NEW BRANCH CODES ADDED (frontend + backend)
+  COMPUTER SCIENCE & ENGINEERING WITH DATA SCIENCE   -> csd
+  COMPUTER SCIENCE & ENGINEERING WITH CYBER SECURITY -> csc
+  CHEMICAL ENGINEERING                               -> che
+  (existing: cse, csm(AI&ML), it, ece, eee, mech, civil)
+  - Backend: util/BranchCodeMapper.java (keyword order: Data Science / Cyber /
+    AI-ML checked before plain "Computer").
+  - Frontend: lib/constants.ts DEPARTMENTS + all hardcoded department lists in
+    admin/faculty pages updated to:
+    ["CSE","CSD","CSC","CSM","IT","ECE","EEE","MECH","CIVIL","CHE"]
+
+VERIFIED (as admin)
+  - POST /api/login/admin -> success, role=admin, returns jwtToken.
+  - POST /api/admin/results/json with that token created a23_2_1_csd and
+    a23_3_2_csc correctly (Data Science -> csd, Cyber -> csc, III/IV SEM-II -> 3-2).
+  - Test tables dropped; DB clean (students_a23_csm, users).
+
+--------------------------------------------------------------------------
+ NGROK (expose local backend to cloud n8n)
+--------------------------------------------------------------------------
+  The backend listens on port 8091, so point ngrok at that:
+
+      ngrok http 8091
+
+  ngrok prints a public HTTPS URL, e.g.  https://<random>.ngrok-free.app
+  Use it in your n8n HTTP Request nodes:
+
+      Login (optional, pattern b):
+        POST https://<random>.ngrok-free.app/api/login/admin
+        body { "email":"admin@anits.edu.in", "username":"admin", "password":"Admin@123" }
+
+      Upload results:
+        POST https://<random>.ngrok-free.app/api/admin/results/json
+        Header: Authorization: Bearer <jwtToken>
+        Header: Content-Type: application/json
+        Body: the sections[] results JSON
+
+  NOTES:
+  - The ngrok URL changes every restart (unless you have a reserved domain).
+  - n8n -> backend is server-to-server, so CORS does not apply.
+  - If instead the BROWSER (frontend) will call the backend via the ngrok URL,
+    add that ngrok origin to CORS in SecurityConfig (currently only localhost:*
+    and the netlify origin are allowed).
+==========================================================================

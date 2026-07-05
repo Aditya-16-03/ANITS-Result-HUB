@@ -423,3 +423,32 @@ export const loginAdmin = async (data: { username: string; email: string; passwo
         throw new Error(error.message || 'An unknown error occurred during login.');
     }
 };
+
+
+// Upload a results PDF. The backend forwards it to n8n, which parses it to JSON;
+// batch / semester / branch are derived from the file, so no extra inputs are needed.
+export const uploadResultsPdf = async (file: File): Promise<any> => {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const response = await apiClient.post(`/api/admin/results/pdf`, formData, {
+            headers: {
+                'Content-Type': 'multipart/form-data',
+            },
+        });
+
+        if (response.status === 200) {
+            return response.data;
+        } else {
+            throw new Error(`Results PDF upload failed. Status: ${response.status}`);
+        }
+    } catch (error: any) {
+        if (axios.isAxiosError(error) && error.response) {
+            const data = error.response.data;
+            const message = typeof data === 'string' ? data : (data?.message || `An error occurred. Status: ${error.response.status}`);
+            throw new Error(message);
+        }
+        throw new Error(error.message || 'An unknown error occurred during the results PDF upload.');
+    }
+};

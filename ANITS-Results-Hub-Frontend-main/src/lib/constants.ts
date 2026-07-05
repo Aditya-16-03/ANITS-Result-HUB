@@ -1,1 +1,1 @@
-export const DEPARTMENTS = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "CSM"];
+export const DEPARTMENTS = ["CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];

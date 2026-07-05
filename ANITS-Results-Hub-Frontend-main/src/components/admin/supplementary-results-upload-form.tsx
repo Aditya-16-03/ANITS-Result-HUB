@@ -35,7 +35,7 @@ import { uploadSupplementaryResultsFile } from "@/services/api";
 
 const years = ["A21", "A22", "A23", "A24"];
 const semesters = ["1-1", "1-2", "2-1", "2-2", "3-1", "3-2", "4-1", "4-2"];
-const departments = ["CSE", "IT", "ECE", "EEE", "MECH", "CIVIL", "CSM"];
+const departments = ["CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];
 
 const fileUploadSchema = z.object({
   year: z.string().refine(val => val !== '--', { message: "Please select an admission year." }),

@@ -34,7 +34,7 @@ import { getStudentListForAdmin } from "@/services/api";
 
 const years = ["A21", "A22", "A23", "A24", "A25"];
 const semesters = ["1-1", "1-2", "2-1", "2-2", "3-1", "3-2", "4-1", "4-2"];
-const departments = ["CSE", "IT", "ECE", "CSM"];
+const departments = ["CSE", "CSD", "CSC", "CSM", "IT", "ECE", "EEE", "MECH", "CIVIL", "CHE"];
 const sections = ["A", "B", "C", "D"];
 
 export default function AdminDashboardPage() {
